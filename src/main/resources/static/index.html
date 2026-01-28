@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>本地视频浏览</title>
+  <script src="https://unpkg.com/vue@2.7.16/dist/vue.js"></script>
+  <style>
+    :root { --gap: 12px; --bg: #0f1115; --card: #1a1f29; --text: #e6e9ef; --muted:#9aa4b2; --accent:#5b9cff; }
+    * { box-sizing: border-box; }
+    body { margin:0; background:var(--bg); color:var(--text); font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Noto Sans SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif; }
+    header { position:sticky; top:0; z-index:10; background:linear-gradient(180deg, rgba(15,17,21,.9), rgba(15,17,21,.7)); backdrop-filter: blur(6px); padding: 10px 16px; border-bottom: 1px solid rgba(255,255,255,.06); }
+    header h1 { margin:0; font-size:18px; }
+    header small { color:var(--muted); }
+    .grid {
+      display:grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: var(--gap);
+      padding: var(--gap);
+    }
+    @media (min-width: 600px) { .grid { grid-template-columns: repeat(3, 1fr); } }
+    @media (min-width: 900px) { .grid { grid-template-columns: repeat(5, 1fr); } }
+    .card {
+      background: var(--card);
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 6px 18px rgba(0,0,0,.25);
+      transition: transform .15s ease, box-shadow .15s ease;
+      user-select: none;
+    }
+    .card:hover { transform: translateY(-2px); box-shadow: 0 10px 24px rgba(0,0,0,.35); }
+    .thumb {
+      width: 100%;
+      aspect-ratio: 16/9;
+      background:#0b0e13;
+      display:block;
+      object-fit: cover;
+    }
+    .meta {
+      padding: 10px 12px;
+      display:flex;
+      align-items:center;
+      justify-content: space-between;
+      font-size: 12px;
+    }
+    .name {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      display:-webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+    }
+    .size { color: var(--muted); margin-left:8px; white-space: nowrap; }
+    .loader {
+      text-align:center; padding: 16px; color: var(--muted);
+    }
+    .overlay {
+      position: fixed; inset: 0; background: rgba(0,0,0,.55);
+      display: none; align-items: center; justify-content: center; z-index: 1000;
+    }
+    .overlay.active { display: flex; }
+    .overlay video {
+      width: 92vw; max-width: 900px; height: auto; border-radius: 12px; background:#000;
+    }
+    .hint { text-align:center; color: var(--muted); padding:10px; }
+    .topbar {
+      display:flex; align-items:center; gap:10px; margin-top:6px;
+    }
+    button {
+      background: var(--accent); color:white; border:none; padding:6px 10px; border-radius:8px; font-size:12px;
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <header>
+      <h1>本地视频浏览</h1>
+      <div class="topbar">
+        <small>共 {{ total }} 个视频</small>
+        <button @click="rescan" title="重新扫描">重新扫描</button>
+      </div>
+    </header>
+
+    <div class="grid">
+      <div class="card"
+           v-for="(item, idx) in items" :key="item.relativePath"
+           @mousedown.prevent="onPressStart(item, $event)" @mouseup="onPressEnd($event)"
+           @touchstart.prevent="onPressStart(item, $event)" @touchend.prevent="onPressEnd($event)">
+        <img class="thumb"
+             :src="thumbUrl(item)"
+             loading="lazy"
+             :alt="item.name"
+             @error="fallbackThumb($event, item)">
+        <div class="meta">
+          <div class="name">{{ item.name }}</div>
+          <div class="size">{{ prettySize(item.size) }}</div>
+        </div>
+      </div>
+    </div>
+    <div class="loader" v-if="loading">加载中...</div>
+    <div class="hint" v-if="!loading && items.length===0">未找到视频文件，请确认 D:\\video 目录</div>
+
+    <div class="overlay" :class="{active: previewing}">
+      <video ref="pv" playsinline webkit-playsinline controls muted></video>
+    </div>
+  </div>
+
+  <script>
+    new Vue({
+      el: '#app',
+      data() {
+        return {
+          items: [],
+          page: 1,
+          pageSize: 24,
+          total: 0,
+          loading: false,
+          exhausted: false,
+          previewing: false,
+          previewTimer: null,
+          pressTimer: null,
+          pressedItem: null,
+          previewByPress: false,
+        }
+      },
+      created() {
+        this.loadNext();
+        window.addEventListener('scroll', this.onScroll, { passive: true });
+      },
+      methods: {
+        api(path) { return `/api${path}`; },
+        thumbUrl(item) { return this.api(`/thumbnail?path=${encodeURIComponent(item.relativePath)}`); },
+        mediaUrl(item) { return `/media/${item.relativePath}`.replace(/\\+/g,'/'); },
+        prettySize(n) {
+          const units = ['B','KB','MB','GB','TB'];
+          let i=0; let x=n;
+          while (x>=1024 && i<units.length-1) { x/=1024; i++; }
+          return x.toFixed(i?1:0)+' '+units[i];
+        },
+        async loadNext() {
+          if (this.loading || this.exhausted) return;
+          this.loading = true;
+          try {
+            const res = await fetch(this.api(`/videos?page=${this.page}&pageSize=${this.pageSize}`));
+            const data = await res.json();
+            this.total = data.total;
+            const newItems = data.items || [];
+            if (newItems.length === 0) {
+              this.exhausted = true;
+            } else {
+              this.items = this.items.concat(newItems);
+              this.page += 1;
+            }
+          } catch (e) {
+            console.error(e);
+          } finally {
+            this.loading = false;
+          }
+        },
+        onScroll() {
+          const nearBottom = (window.innerHeight + window.scrollY) >= (document.body.offsetHeight - 200);
+          if (nearBottom) this.loadNext();
+        },
+        rescan() {
+          fetch(this.api('/rescan'), { method:'POST' }).then(()=>{
+            this.items = []; this.page = 1; this.exhausted = false;
+            this.loadNext();
+          });
+        },
+        onPressStart(item, ev) {
+          this.pressedItem = item;
+          this.previewByPress = false;
+          clearTimeout(this.pressTimer);
+          this.pressTimer = setTimeout(()=>{
+            this.previewByPress = true;
+            this.startPreview(item);
+          }, 350);
+        },
+        onPressEnd(ev) {
+          if (this.pressTimer) {
+            clearTimeout(this.pressTimer);
+            this.pressTimer = null;
+          }
+          if (!this.previewByPress && this.pressedItem) {
+            this.openDetail(this.pressedItem);
+          }
+          if (this.previewByPress) {
+            this.stopPreview();
+            this.previewByPress = false;
+          }
+          this.pressedItem = null;
+        },
+        startPreview(item) {
+          const v = this.$refs.pv;
+          v.src = this.mediaUrl(item);
+          v.muted = true;
+          this.previewing = true;
+          clearTimeout(this.previewTimer);
+          const onMeta = () => {
+            v.removeEventListener('loadedmetadata', onMeta);
+            const dur = isFinite(v.duration) ? v.duration : 60;
+            const maxJump = Math.max(1, Math.min(30, dur - 2));
+            const t = Math.max(0, Math.min(dur - 2, Math.floor(Math.random() * maxJump)));
+            try { v.currentTime = t; } catch(e){}
+            v.play().then(()=>{
+              this.previewTimer = setTimeout(()=>{ this.stopPreview(); }, 3000);
+            }).catch(()=>{});
+          };
+          v.addEventListener('loadedmetadata', onMeta);
+        },
+        stopPreview() {
+          const v = this.$refs.pv;
+          try { v.pause(); } catch(e){}
+          this.previewing = false;
+          clearTimeout(this.previewTimer);
+        },
+        openDetail(item) {
+          const url = `/player.html?path=${encodeURIComponent(item.relativePath)}&name=${encodeURIComponent(item.name)}`;
+          window.location.href = url;
+        },
+        fallbackThumb(evt, item) {
+          const w = 800, h = 450;
+          const svg =
+            `<svg xmlns='http://www.w3.org/2000/svg' width='${w}' height='${h}'>`+
+            `<defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0%' stop-color='#0b0e13'/><stop offset='100%' stop-color='#1a1f29'/></linearGradient></defs>`+
+            `<rect width='100%' height='100%' fill='url(#g)'/>`+
+            `<text x='50%' y='50%' dominant-baseline='middle' text-anchor='middle' font-size='24' fill='#9aa4b2'>${this.escapeXml(item.name)}</text>`+
+            `</svg>`;
+          const url = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+          evt.target.src = url;
+        },
+        escapeXml(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+      }
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>播放详情</title>
+  <script src="https://unpkg.com/vue@2.7.16/dist/vue.js"></script>
+  <style>
+    :root { --bg:#0f1115; --text:#e6e9ef; --muted:#9aa4b2; --accent:#5b9cff; --card:#1a1f29; }
+    body { margin:0; background:var(--bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Noto Sans SC","Microsoft YaHei","Helvetica Neue",Arial,sans-serif;}
+    header { position:sticky; top:0; z-index:10; background:linear-gradient(180deg, rgba(15,17,21,.9), rgba(15,17,21,.7)); backdrop-filter: blur(6px); padding: 10px 16px; border-bottom: 1px solid rgba(255,255,255,.06); display:flex; align-items:center; gap:10px;}
+    header h1 { margin:0; font-size:18px; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+    header .back { background: transparent; color: var(--text); border:1px solid rgba(255,255,255,.2); padding:6px 10px; border-radius:8px; }
+    .container { padding: 12px; }
+    .player {
+      position: relative;
+      background: #000; border-radius: 12px; overflow:hidden; box-shadow: 0 6px 18px rgba(0,0,0,.25);
+    }
+    video { width: 100%; height: auto; max-height: 70vh; }
+    .seek-btn {
+      position:absolute; top: 50%; transform: translateY(-50%);
+      background: rgba(255,255,255,.18); color:#fff; border:none;
+      width: 44px; height: 44px; border-radius: 22px;
+      display:flex; align-items:center; justify-content:center;
+      backdrop-filter: blur(6px);
+    }
+    .seek-left { left: 8px; }
+    .seek-right { right: 8px; }
+    .seek-btn span { font-size: 11px; }
+    .controls { display:flex; flex-wrap:wrap; gap:8px; padding:10px; background:var(--card); border-radius:12px; margin-top:10px; align-items:center; }
+    .chip { background: #252b37; color: var(--text); border:none; padding:6px 10px; border-radius:999px; font-size:12px; }
+    .chip.active { background: var(--accent); }
+    .rec { display:flex; gap:8px; align-items:center; }
+    .badge { color: var(--muted); font-size:12px; }
+    .speed-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: none; align-items:center; justify-content:center; z-index:1000; }
+    .speed-overlay.active { display:flex; }
+    .speed-panel { background: var(--card); padding: 12px; border-radius:12px; display:flex; gap:10px; }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <header>
+      <button class="back" @click="goBack">返回</button>
+      <h1>{{ name }}</h1>
+    </header>
+    <div class="container">
+      <div class="player">
+        <video ref="player" controls playsinline webkit-playsinline :src="mediaUrl"></video>
+        <button class="seek-btn seek-left" @click="seek(-10)"><span>-10s</span></button>
+        <button class="seek-btn seek-right" @click="seek(+10)"><span>+10s</span></button>
+      </div>
+      <div class="controls">
+        <!-- Speed buttons removed as requested -->
+        <div class="rec">
+          <button class="chip" :class="{active: recordMode==='clip'}" @click="toggleClip">
+            🎬 导出视频
+          </button>
+          <button class="chip" :class="{active: recordMode==='gif'}" @click="toggleGif">
+            🖼 导出GIF
+          </button>
+          <span class="badge" v-if="recordMode">已标记起点 {{ startTime.toFixed(2) }}s，再次点击结束</span>
+        </div>
+      </div>
+      <div class="controls" v-if="downloadUrl">
+        <span class="badge">已生成：</span>
+        <a :href="downloadUrl" target="_blank">{{ downloadUrl }}</a>
+        <button class="chip" @click="saveNow">保存到设备</button>
+      </div>
+    </div>
+
+    <div class="speed-overlay" :class="{active: overlay}">
+      <div class="speed-panel" @mousedown.stop @touchstart.stop>
+        <div class="chip">在视频上长按并左右滑动调速</div>
+      </div>
+    </div>
+  </div>
+  <script>
+    function getQuery(k){ const u=new URL(window.location.href); return u.searchParams.get(k)||''; }
+    new Vue({
+      el: '#app',
+      data(){
+        return {
+          path: decodeURIComponent(getQuery('path')),
+          name: decodeURIComponent(getQuery('name')) || '播放详情',
+          speeds: [1.0, 1.25, 1.5, 2.0],
+          longSpeeds: [2.0, 3.0, 4.0, 5.0],
+          speed: 1.0,
+          overlay: false,
+          startTime: 0,
+          endTime: 0,
+          downloadUrl: '',
+          recordMode: null,
+          metaLoaded: false,
+          touchStartX: 0,
+          touchStartTime: 0,
+          longPressTimer: null,
+          baseSpeed: 1.0,
+          tempSpeed: 1.0,
+        };
+      },
+      computed:{
+        mediaUrl(){ return `/media/${this.path}`; },
+        canExport(){ return this.endTime > this.startTime; }
+      },
+      mounted(){
+        const v = this.$refs.player;
+        v.playbackRate = this.speed;
+        v.addEventListener('error', this.onPlaybackError);
+        v.addEventListener('loadedmetadata', ()=>{ this.metaLoaded=true; });
+        // gestures
+        v.addEventListener('touchstart', this.onTouchStart, {passive:false});
+        v.addEventListener('touchmove', this.onTouchMove, {passive:false});
+        v.addEventListener('touchend', this.onTouchEnd);
+        v.addEventListener('mousedown', this.onMouseDown);
+      },
+      methods:{
+        goBack(){ history.length>1 ? history.back() : window.location.href='/' },
+        setSpeed(s){
+          this.speed = s;
+          const v = this.$refs.player;
+          v.playbackRate = s;
+        },
+        onPlaybackError(){
+          this.requestPlayable();
+        },
+        async requestPlayable(){
+          try {
+            const r = await fetch('/api/transcode', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ path: this.path })});
+            const d = await r.json();
+            this.compatUrl = d.url;
+            const v = this.$refs.player;
+            v.src = d.url;
+            v.playbackRate = this.speed;
+            v.play().catch(()=>{});
+          } catch(e) {}
+        },
+        seek(delta){
+          const v = this.$refs.player;
+          const nt = Math.max(0, Math.min((v.duration||v.currentTime+delta), v.currentTime + delta));
+          v.currentTime = nt;
+        },
+        toggleClip(){
+          const v = this.$refs.player;
+          if (this.recordMode === 'clip'){
+            this.endTime = Math.max(v.currentTime, this.startTime + 0.2);
+            this.exportClip();
+            this.recordMode = null;
+          } else {
+            this.startTime = v.currentTime;
+            this.endTime = this.startTime;
+            this.recordMode = 'clip';
+          }
+        },
+        toggleGif(){
+          const v = this.$refs.player;
+          if (this.recordMode === 'gif'){
+            this.endTime = Math.max(v.currentTime, this.startTime + 0.2);
+            this.exportGif();
+            this.recordMode = null;
+          } else {
+            this.startTime = v.currentTime;
+            this.endTime = this.startTime;
+            this.recordMode = 'gif';
+          }
+        },
+        async exportClip(){
+          const body = { path: this.path, start: this.startTime, end: this.endTime };
+          const r = await fetch('/api/clip', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+          if (!r.ok) { const e = await r.json().catch(()=>({})); alert('导出视频失败: '+(e.error||r.status)); return; }
+          const d = await r.json();
+          const name = d && d.name ? d.name : (this.safeBaseName(this.name) + '-clip.mp4');
+          this.downloadUrl = `/api/download/clip?name=${encodeURIComponent(name)}`;
+          this.saveToDevice(this.downloadUrl, name);
+        },
+        async exportGif(){
+          const duration = Math.min(this.endTime - this.startTime, 20);
+          const body = { path: this.path, start: this.startTime, duration, width: 480 };
+          const r = await fetch('/api/gif', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+          if (!r.ok) { const e = await r.json().catch(()=>({})); alert('导出GIF失败: '+(e.error||r.status)); return; }
+          const d = await r.json();
+          const name = d && d.name ? d.name : (this.safeBaseName(this.name) + '-clip.gif');
+          this.downloadUrl = `/api/download/gif?name=${encodeURIComponent(name)}`;
+          this.saveToDevice(this.downloadUrl, name);
+        },
+        saveToDevice(url, filename){
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = filename || '';
+          a.style.display = 'none';
+          document.body.appendChild(a);
+          try { a.click(); } catch(e) {}
+          setTimeout(()=>{ document.body.removeChild(a); }, 0);
+        },
+        saveNow(){
+          if (!this.downloadUrl) return;
+          const name = this.downloadUrl.includes('/clip?') ? (this.name.replace(/\.[^/.]+$/, '') + '-clip.mp4') : (this.name.replace(/\.[^/.]+$/, '') + '-clip.gif');
+          this.saveToDevice(this.downloadUrl, name);
+        },
+        safeBaseName(n){ return (n||'video').replace(/\.[^/.]+$/, ''); },
+        onTouchStart(e){
+          if (e.touches.length!==1) return;
+          this.touchStartX = e.touches[0].clientX;
+          this.touchStartTime = Date.now();
+          clearTimeout(this.longPressTimer);
+          this.longPressTimer = setTimeout(()=>{
+            this.speedMode = true;
+            this.overlay = true;
+            this.baseSpeed = 2.0; // Default to 2.0x on long press
+            this.applySpeed(this.baseSpeed);
+          }, 300);
+        },
+        onTouchMove(e){
+          if (this.speedMode){
+            e.preventDefault();
+            const dx = e.touches[0].clientX - this.touchStartX;
+            const step = 0.25;
+            const delta = Math.round((dx/80)/step)*step;
+            // Allow speed adjustment from baseSpeed (2.0)
+            const s = Math.max(0.5, Math.min(5.0, this.baseSpeed + delta));
+            this.applySpeed(s);
+          }
+        },
+        onTouchEnd(e){
+          clearTimeout(this.longPressTimer);
+          if (this.speedMode){
+            this.speedMode = false;
+            this.overlay = false;
+            // Restore original speed (Momentary behavior)
+            this.applySpeed(this.speed); 
+          } else {
+            // Handle tap for seek
+            const touchDuration = Date.now() - this.touchStartTime;
+            if (touchDuration < 300) {
+               const x = e.changedTouches[0].clientX;
+               const v = this.$refs.player;
+               const rect = v.getBoundingClientRect();
+               const relX = x - rect.left;
+               if (relX < rect.width * 0.2) {
+                 this.seek(-10);
+               } else if (relX > rect.width * 0.8) {
+                 this.seek(10);
+               }
+            }
+          }
+        },
+        onMouseDown(e){
+          const v = this.$refs.player;
+          const rect = v.getBoundingClientRect();
+          const x = e.clientX - rect.left;
+          const leftZone = rect.width * 0.2;
+          const rightZone = rect.width * 0.8;
+          if (x < leftZone){
+            v.currentTime = Math.max(0, v.currentTime - 10);
+          } else if (x > rightZone){
+            v.currentTime = Math.min(v.duration || v.currentTime+10, v.currentTime + 10);
+          }
+        },
+        applySpeed(s){
+          this.tempSpeed = s;
+          const v = this.$refs.player;
+          v.playbackRate = s;
+        }
+      }
+    });
+  </script>
+</body>
+</html>

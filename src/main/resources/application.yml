@@ -1,0 +1,15 @@
+server:
+  port: 8080
+
+app:
+  videoBaseDir: "D:/video"
+  ffmpegPath: "ffmpeg"
+  thumbnailCacheDir: "${user.dir}/tmp/thumbnails"
+  clipCacheDir: "${user.dir}/tmp/clips"
+  gifCacheDir: "${user.dir}/tmp/gifs"
+  streamCacheDir: "${user.dir}/tmp/streams"
+
+spring:
+  mvc:
+    pathmatch:
+      matching-strategy: ant_path_matcher
