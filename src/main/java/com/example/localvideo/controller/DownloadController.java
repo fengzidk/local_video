@@ -1,16 +1,20 @@
 package com.example.localvideo.controller;
 
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.core.io.FileSystemResource;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.util.StreamUtils;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.InputStream;
+import java.io.IOException;
 
 @RestController
 @RequestMapping("/api")
@@ -23,12 +27,11 @@ public class DownloadController {
     private String gifCacheDir;
 
     @GetMapping("/download/clip")
-    public ResponseEntity<FileSystemResource> downloadClip(@RequestParam("name") String name) {
+    public ResponseEntity<StreamingResponseBody> downloadClip(@RequestParam("name") String name) {
         File file = safeFile(clipCacheDir, name);
         if (!file.exists() || !file.isFile()) {
             return ResponseEntity.notFound().build();
         }
-        FileSystemResource res = new FileSystemResource(file);
         String encoded = urlEncode(file.getName());
         return ResponseEntity.ok()
                 .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + file.getName() + "\"; filename*=UTF-8''" + encoded)
@@ -36,16 +39,23 @@ public class DownloadController {
                 .header("X-Content-Type-Options", "nosniff")
                 .contentLength(file.length())
                 .contentType(MediaType.valueOf("video/mp4"))
-                .body(res);
+                .body(out -> {
+                    try (InputStream in = new FileInputStream(file)) {
+                        StreamUtils.copy(in, out);
+                    } catch (IOException e) {
+                        // ignore or log
+                    } finally {
+                        if (file.exists()) file.delete();
+                    }
+                });
     }
 
     @GetMapping("/download/gif")
-    public ResponseEntity<FileSystemResource> downloadGif(@RequestParam("name") String name) {
+    public ResponseEntity<StreamingResponseBody> downloadGif(@RequestParam("name") String name) {
         File file = safeFile(gifCacheDir, name);
         if (!file.exists() || !file.isFile()) {
             return ResponseEntity.notFound().build();
         }
-        FileSystemResource res = new FileSystemResource(file);
         String encoded = urlEncode(file.getName());
         return ResponseEntity.ok()
                 .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + file.getName() + "\"; filename*=UTF-8''" + encoded)
@@ -53,7 +63,15 @@ public class DownloadController {
                 .header("X-Content-Type-Options", "nosniff")
                 .contentLength(file.length())
                 .contentType(MediaType.IMAGE_GIF)
-                .body(res);
+                .body(out -> {
+                    try (InputStream in = new FileInputStream(file)) {
+                        StreamUtils.copy(in, out);
+                    } catch (IOException e) {
+                        // ignore or log
+                    } finally {
+                        if (file.exists()) file.delete();
+                    }
+                });
     }
 
     private File safeFile(String baseDir, String name) {
