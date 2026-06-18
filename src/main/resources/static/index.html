@@ -85,7 +85,7 @@
       <div class="card"
            v-for="(item, idx) in items" :key="item.relativePath"
            @mousedown.prevent="onPressStart(item, $event)" @mouseup="onPressEnd($event)"
-           @touchstart.prevent="onPressStart(item, $event)" @touchend.prevent="onPressEnd($event)">
+           @touchstart="onTouchStart(item, $event)" @touchmove="onTouchMove($event)" @touchend="onTouchEnd($event)">
         <img class="thumb"
              :src="thumbUrl(item)"
              loading="lazy"
@@ -121,6 +121,9 @@
           pressTimer: null,
           pressedItem: null,
           previewByPress: false,
+          touchStartX: 0,
+          touchStartY: 0,
+          touchMoved: false,
         }
       },
       created() {
@@ -130,7 +133,9 @@
       methods: {
         api(path) { return `/api${path}`; },
         thumbUrl(item) { return this.api(`/thumbnail?path=${encodeURIComponent(item.relativePath)}`); },
-        mediaUrl(item) { return `/media/${item.relativePath}`.replace(/\\+/g,'/'); },
+        mediaUrl(item) {
+          return '/media/' + item.relativePath.replace(/\\/g, '/').split('/').map(encodeURIComponent).join('/');
+        },
         prettySize(n) {
           const units = ['B','KB','MB','GB','TB'];
           let i=0; let x=n;
@@ -150,6 +155,15 @@
             } else {
               this.items = this.items.concat(newItems);
               this.page += 1;
+            }
+            // 首次加载后移除已删除的视频
+            if (this.page === 2) {
+              const deletedPath = sessionStorage.getItem('deleted_path');
+              if (deletedPath) {
+                sessionStorage.removeItem('deleted_path');
+                this.items = this.items.filter(v => v.relativePath !== deletedPath);
+                this.total = Math.max(0, this.total - 1);
+              }
             }
           } catch (e) {
             console.error(e);
@@ -182,6 +196,54 @@
             this.pressTimer = null;
           }
           if (!this.previewByPress && this.pressedItem) {
+            this.openDetail(this.pressedItem);
+          }
+          if (this.previewByPress) {
+            this.stopPreview();
+            this.previewByPress = false;
+          }
+          this.pressedItem = null;
+        },
+        onTouchStart(item, ev) {
+          const t = ev.touches[0];
+          this.touchStartX = t.clientX;
+          this.touchStartY = t.clientY;
+          this.touchMoved = false;
+          this.pressedItem = item;
+          this.previewByPress = false;
+          clearTimeout(this.pressTimer);
+          this.pressTimer = setTimeout(()=>{
+            if (!this.touchMoved) {
+              this.previewByPress = true;
+              this.startPreview(item);
+            }
+          }, 400);
+        },
+        onTouchMove(ev) {
+          if (!this.touchMoved) {
+            const t = ev.touches[0];
+            const dx = Math.abs(t.clientX - this.touchStartX);
+            const dy = Math.abs(t.clientY - this.touchStartY);
+            if (dx > 8 || dy > 8) {
+              this.touchMoved = true;
+              clearTimeout(this.pressTimer);
+              this.pressTimer = null;
+            }
+          }
+        },
+        onTouchEnd(ev) {
+          if (this.pressTimer) {
+            clearTimeout(this.pressTimer);
+            this.pressTimer = null;
+          }
+          if (this.touchMoved) {
+            // 是滑动，不触发任何操作
+            this.pressedItem = null;
+            this.previewByPress = false;
+            return;
+          }
+          if (!this.previewByPress && this.pressedItem) {
+            ev.preventDefault();
             this.openDetail(this.pressedItem);
           }
           if (this.previewByPress) {

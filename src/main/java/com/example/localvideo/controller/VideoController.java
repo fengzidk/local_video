@@ -4,7 +4,7 @@ import com.example.localvideo.model.PageResponse;
 import com.example.localvideo.model.VideoFile;
 import com.example.localvideo.service.VideoService;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.util.StringUtils;
@@ -40,5 +40,19 @@ public class VideoController {
     public ResponseEntity<Void> rescan() {
         videoService.rescan();
         return ResponseEntity.noContent().build();
+    }
+
+    @DeleteMapping("/video")
+    public ResponseEntity<?> deleteVideo(@RequestParam String path) {
+        try {
+            videoService.deleteVideo(path);
+            return ResponseEntity.noContent().build();
+        } catch (java.io.FileNotFoundException e) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(java.util.Collections.singletonMap("error", e.getMessage()));
+        } catch (java.io.IOException e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(java.util.Collections.singletonMap("error", e.getMessage()));
+        }
     }
 }

@@ -30,11 +30,23 @@
     .controls { display:flex; flex-wrap:wrap; gap:8px; padding:10px; background:var(--card); border-radius:12px; margin-top:10px; align-items:center; }
     .chip { background: #252b37; color: var(--text); border:none; padding:6px 10px; border-radius:999px; font-size:12px; }
     .chip.active { background: var(--accent); }
-    .rec { display:flex; gap:8px; align-items:center; }
+    .rec { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
     .badge { color: var(--muted); font-size:12px; }
+    .res-group { display:flex; gap:4px; align-items:center; }
+    .res-label { color:var(--muted); font-size:12px; white-space:nowrap; }
     .speed-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: none; align-items:center; justify-content:center; z-index:1000; }
     .speed-overlay.active { display:flex; }
     .speed-panel { background: var(--card); padding: 12px; border-radius:12px; display:flex; gap:10px; }
+    .btn-danger { background: #e05252; color:#fff; border:none; padding:6px 14px; border-radius:8px; font-size:13px; cursor:pointer; }
+    .btn-danger:hover { background: #c43a3a; }
+    .confirm-overlay { position:fixed; inset:0; background:rgba(0,0,0,.6); display:none; align-items:center; justify-content:center; z-index:2000; }
+    .confirm-overlay.active { display:flex; }
+    .confirm-box { background:var(--card); border-radius:16px; padding:24px 20px; width:min(88vw,360px); box-shadow:0 12px 40px rgba(0,0,0,.5); }
+    .confirm-box h3 { margin:0 0 8px; font-size:16px; }
+    .confirm-box p { margin:0 0 20px; color:var(--muted); font-size:14px; word-break:break-all; }
+    .confirm-actions { display:flex; gap:10px; justify-content:flex-end; }
+    .confirm-actions .cancel { background:#2a3040; color:var(--text); border:none; padding:8px 16px; border-radius:8px; font-size:13px; cursor:pointer; }
+    .confirm-actions .confirm { background:#e05252; color:#fff; border:none; padding:8px 16px; border-radius:8px; font-size:13px; cursor:pointer; }
   </style>
 </head>
 <body>
@@ -42,10 +54,11 @@
     <header>
       <button class="back" @click="goBack">返回</button>
       <h1>{{ name }}</h1>
+      <button class="btn-danger" @click="confirmDelete">删除</button>
     </header>
     <div class="container">
       <div class="player">
-        <video ref="player" controls playsinline webkit-playsinline :src="mediaUrl"></video>
+        <video ref="player" controls playsinline webkit-playsinline autoplay muted :src="mediaUrl"></video>
         <button class="seek-btn seek-left" @click="seek(-10)"><span>-10s</span></button>
         <button class="seek-btn seek-right" @click="seek(+10)"><span>+10s</span></button>
       </div>
@@ -58,6 +71,12 @@
           <button class="chip" :class="{active: recordMode==='gif'}" @click="toggleGif">
             🖼 导出GIF
           </button>
+          <div class="res-group">
+            <span class="res-label">分辨率：</span>
+            <button v-for="r in resOptions" :key="r.value"
+              class="chip" :class="{active: exportWidth===r.value}"
+              @click="exportWidth=r.value">{{ r.label }}</button>
+          </div>
           <span class="badge" v-if="recordMode">已标记起点 {{ startTime.toFixed(2) }}s，再次点击结束</span>
         </div>
       </div>
@@ -71,6 +90,18 @@
     <div class="speed-overlay" :class="{active: overlay}">
       <div class="speed-panel" @mousedown.stop @touchstart.stop>
         <div class="chip">在视频上长按并左右滑动调速</div>
+      </div>
+    </div>
+
+    <!-- 删除二次确认弹窗 -->
+    <div class="confirm-overlay" :class="{active: showConfirm}">
+      <div class="confirm-box" @mousedown.stop @touchstart.stop>
+        <h3>确认删除</h3>
+        <p>将永久删除文件：<strong>{{ name }}</strong>，此操作不可恢复。</p>
+        <div class="confirm-actions">
+          <button class="cancel" @click="showConfirm=false">取消</button>
+          <button class="confirm" @click="doDelete" :disabled="deleting">{{ deleting ? '删除中...' : '确认删除' }}</button>
+        </div>
       </div>
     </div>
   </div>
@@ -96,17 +127,33 @@
           longPressTimer: null,
           baseSpeed: 1.0,
           tempSpeed: 1.0,
+          showConfirm: false,
+          deleting: false,
+          exportWidth: 0,
+          resOptions: [
+            { label: '720p', value: 1280 },
+            { label: '1080p', value: 1920 },
+            { label: '原始', value: 0 },
+          ],
         };
       },
       computed:{
-        mediaUrl(){ return `/media/${this.path}`; },
+        mediaUrl(){
+          return '/media/' + this.path.replace(/\\/g, '/').split('/').map(encodeURIComponent).join('/');
+        },
         canExport(){ return this.endTime > this.startTime; }
       },
       mounted(){
         const v = this.$refs.player;
         v.playbackRate = this.speed;
         v.addEventListener('error', this.onPlaybackError);
-        v.addEventListener('loadedmetadata', ()=>{ this.metaLoaded=true; });
+        v.addEventListener('loadedmetadata', ()=>{
+          this.metaLoaded = true;
+          // 静音自动播放成功后恢复音量
+          v.muted = false;
+        });
+        // 尝试自动播放（先静音以绕过浏览器限制）
+        v.play().catch(()=>{});
         // gestures
         v.addEventListener('touchstart', this.onTouchStart, {passive:false});
         v.addEventListener('touchmove', this.onTouchMove, {passive:false});
@@ -115,6 +162,30 @@
       },
       methods:{
         goBack(){ history.length>1 ? history.back() : window.location.href='/' },
+        confirmDelete(){
+          this.showConfirm = true;
+        },
+        async doDelete(){
+          if (this.deleting) return;
+          this.deleting = true;
+          try {
+            const r = await fetch('/api/video?path=' + encodeURIComponent(this.path), { method: 'DELETE' });
+            if (r.ok || r.status === 204) {
+              // 通知列表页移除该视频
+              sessionStorage.setItem('deleted_path', this.path);
+              window.location.href = '/';
+            } else {
+              const d = await r.json().catch(()=>({}));
+              alert('删除失败：' + (d.error || r.status));
+              this.deleting = false;
+              this.showConfirm = false;
+            }
+          } catch(e) {
+            alert('删除失败：' + e.message);
+            this.deleting = false;
+            this.showConfirm = false;
+          }
+        },
         setSpeed(s){
           this.speed = s;
           const v = this.$refs.player;
@@ -164,7 +235,7 @@
           }
         },
         async exportClip(){
-          const body = { path: this.path, start: this.startTime, end: this.endTime };
+          const body = { path: this.path, start: this.startTime, end: this.endTime, width: this.exportWidth };
           const r = await fetch('/api/clip', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
           if (!r.ok) { const e = await r.json().catch(()=>({})); alert('导出视频失败: '+(e.error||r.status)); return; }
           const d = await r.json();
@@ -174,7 +245,7 @@
         },
         async exportGif(){
           const duration = Math.min(this.endTime - this.startTime, 20);
-          const body = { path: this.path, start: this.startTime, duration, width: 480 };
+          const body = { path: this.path, start: this.startTime, duration, width: this.exportWidth };
           const r = await fetch('/api/gif', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
           if (!r.ok) { const e = await r.json().catch(()=>({})); alert('导出GIF失败: '+(e.error||r.status)); return; }
           const d = await r.json();

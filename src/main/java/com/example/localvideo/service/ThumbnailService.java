@@ -11,7 +11,6 @@ import java.io.File;
 import java.io.IOException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.util.Random;
 
 @Service
 public class ThumbnailService {
@@ -22,7 +21,7 @@ public class ThumbnailService {
     @Value("${app.thumbnailCacheDir}")
     private String thumbnailCacheDir;
 
-    private final Random random = new Random();
+    private final Java2DFrameConverter converter = new Java2DFrameConverter();
 
     public File getOrCreateThumbnail(String relativePath) throws IOException {
         File base = new File(videoBaseDir);
@@ -39,16 +38,48 @@ public class ThumbnailService {
         if (thumb.exists() && thumb.length() > 0) {
             return thumb;
         }
-        int sec = 1 + random.nextInt(30);
         try (FFmpegFrameGrabber grabber = new FFmpegFrameGrabber(video)) {
             grabber.start();
-            grabber.setTimestamp(sec * 1_000_000L);
-            Java2DFrameConverter converter = new Java2DFrameConverter();
-            BufferedImage img = converter.getBufferedImage(grabber.grabImage(), 1.0);
-            if (img == null) throw new IOException("failed to grab image");
-            ImageIO.write(img, "jpg", thumb);
+            long duration = grabber.getLengthInTime(); // microseconds
+            // 候选抓帧时间点：10%、25%、1秒、0秒
+            long[] candidates;
+            if (duration > 0) {
+                long t10 = duration / 10;
+                long t25 = duration / 4;
+                long t1s = 1_000_000L;
+                candidates = new long[]{ t10, t25, t1s, 0 };
+            } else {
+                candidates = new long[]{ 1_000_000L, 0 };
+            }
+            BufferedImage img = null;
+            for (long ts : candidates) {
+                if (ts < 0) ts = 0;
+                if (duration > 0 && ts >= duration) ts = Math.max(0, duration - 1_000_000L);
+                try {
+                    grabber.setTimestamp(ts);
+                    org.bytedeco.javacv.Frame frame = grabber.grabImage();
+                    if (frame != null) {
+                        img = converter.getBufferedImage(frame, 1.0);
+                        if (img != null) break;
+                    }
+                } catch (Exception ignored) {}
+            }
+            if (img == null) {
+                // 最后尝试顺序读取前几帧
+                grabber.setTimestamp(0);
+                for (int i = 0; i < 30; i++) {
+                    org.bytedeco.javacv.Frame frame = grabber.grabImage();
+                    if (frame == null) break;
+                    img = converter.getBufferedImage(frame, 1.0);
+                    if (img != null) break;
+                }
+            }
             grabber.stop();
+            if (img == null) throw new IOException("failed to grab any frame from: " + relativePath);
+            ImageIO.write(img, "jpg", thumb);
             return thumb;
+        } catch (IOException e) {
+            throw e;
         } catch (Exception e) {
             throw new IOException("thumbnail failed: " + e.getMessage(), e);
         }

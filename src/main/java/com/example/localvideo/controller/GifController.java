@@ -25,7 +25,7 @@ public class GifController {
             String path = (String) body.get("path");
             double start = number(body.get("start"));
             double duration = number(body.get("duration"));
-            int width = body.get("width") == null ? 480 : ((Number) body.get("width")).intValue();
+            int width = body.get("width") == null ? 0 : ((Number) body.get("width")).intValue();
             File out = gifService.createGif(path, start, duration, width);
             resp.put("url", "/output/gifs/" + out.getName());
             resp.put("name", out.getName());

@@ -25,7 +25,8 @@ public class ClipController {
             String path = (String) body.get("path");
             double start = number(body.get("start"));
             double end = number(body.get("end"));
-            File out = clipService.createClip(path, start, end);
+            int width = body.get("width") == null ? 0 : ((Number) body.get("width")).intValue();
+            File out = clipService.createClip(path, start, end, width);
             resp.put("url", "/output/clips/" + out.getName());
             resp.put("name", out.getName());
             return ResponseEntity.ok(resp);

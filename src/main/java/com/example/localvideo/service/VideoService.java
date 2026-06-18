@@ -70,4 +70,24 @@ public class VideoService {
     public long totalCount() {
         return getAll().size();
     }
+
+    /**
+     * 删除视频文件，并从内存缓存中移除对应条目。
+     * @param relativePath 相对路径
+     * @throws java.io.IOException 文件不存在或删除失败时抛出
+     */
+    public synchronized void deleteVideo(String relativePath) throws java.io.IOException {
+        File base = new File(videoBaseDir);
+        File video = new File(base, relativePath);
+        if (!video.exists()) {
+            throw new java.io.IOException("文件不存在: " + video.getAbsolutePath());
+        }
+        if (!video.delete()) {
+            throw new java.io.IOException("无法删除文件: " + video.getAbsolutePath());
+        }
+        // 从缓存中移除
+        List<VideoFile> updated = new ArrayList<>(cache);
+        updated.removeIf(v -> v.getRelativePath().equals(relativePath));
+        cache = updated;
+    }
 }
