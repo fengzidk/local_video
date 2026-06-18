@@ -6,6 +6,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import javax.imageio.ImageIO;
+import java.awt.Graphics2D;
 import java.awt.image.BufferedImage;
 import java.io.File;
 import java.io.IOException;
@@ -20,8 +21,6 @@ public class ThumbnailService {
 
     @Value("${app.thumbnailCacheDir}")
     private String thumbnailCacheDir;
-
-    private final Java2DFrameConverter converter = new Java2DFrameConverter();
 
     public File getOrCreateThumbnail(String relativePath) throws IOException {
         File base = new File(videoBaseDir);
@@ -38,7 +37,8 @@ public class ThumbnailService {
         if (thumb.exists() && thumb.length() > 0) {
             return thumb;
         }
-        try (FFmpegFrameGrabber grabber = new FFmpegFrameGrabber(video)) {
+        try (FFmpegFrameGrabber grabber = new FFmpegFrameGrabber(video);
+             Java2DFrameConverter converter = new Java2DFrameConverter()) {
             grabber.start();
             long duration = grabber.getLengthInTime(); // microseconds
             // 候选抓帧时间点：10%、25%、1秒、0秒
@@ -59,8 +59,11 @@ public class ThumbnailService {
                     grabber.setTimestamp(ts);
                     org.bytedeco.javacv.Frame frame = grabber.grabImage();
                     if (frame != null) {
-                        img = converter.getBufferedImage(frame, 1.0);
-                        if (img != null) break;
+                        BufferedImage shared = converter.getBufferedImage(frame, 1.0);
+                        if (shared != null) {
+                            img = deepCopy(shared);
+                            break;
+                        }
                     }
                 } catch (Exception ignored) {}
             }
@@ -70,8 +73,11 @@ public class ThumbnailService {
                 for (int i = 0; i < 30; i++) {
                     org.bytedeco.javacv.Frame frame = grabber.grabImage();
                     if (frame == null) break;
-                    img = converter.getBufferedImage(frame, 1.0);
-                    if (img != null) break;
+                    BufferedImage shared = converter.getBufferedImage(frame, 1.0);
+                    if (shared != null) {
+                        img = deepCopy(shared);
+                        break;
+                    }
                 }
             }
             grabber.stop();
@@ -83,6 +89,21 @@ public class ThumbnailService {
         } catch (Exception e) {
             throw new IOException("thumbnail failed: " + e.getMessage(), e);
         }
+    }
+
+    /**
+     * Java2DFrameConverter 返回的 BufferedImage 共享内部像素缓冲区，多线程并发调用
+     * 会导致不同视频生成重复缩略图。写出前复制为独立位图，使结果与转换器状态解耦。
+     */
+    private BufferedImage deepCopy(BufferedImage src) {
+        BufferedImage copy = new BufferedImage(src.getWidth(), src.getHeight(), BufferedImage.TYPE_INT_RGB);
+        Graphics2D g = copy.createGraphics();
+        try {
+            g.drawImage(src, 0, 0, null);
+        } finally {
+            g.dispose();
+        }
+        return copy;
     }
 
     private String sha1(String s) {

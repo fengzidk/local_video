@@ -16,17 +16,26 @@
       position: relative;
       background: #000; border-radius: 12px; overflow:hidden; box-shadow: 0 6px 18px rgba(0,0,0,.25);
     }
-    video { width: 100%; height: auto; max-height: 70vh; }
+    video { width: 100%; height: auto; max-height: 70vh; display:block; }
+    /* Visible icon buttons for seek (-10s left, +10s right). Single tap = ±10s,
+       long-press repeats every 200ms. Buttons sit above the native control bar so
+       play/pause and scrubber remain reachable. The left button avoids the top-left
+       corner where iPad Chrome renders native fullscreen / AirPlay / PiP icons. */
     .seek-btn {
       position:absolute; top: 50%; transform: translateY(-50%);
-      background: rgba(255,255,255,.18); color:#fff; border:none;
-      width: 44px; height: 44px; border-radius: 22px;
+      background: rgba(0,0,0,.45); color:#fff; border:none;
+      width: 56px; height: 56px; border-radius: 28px;
       display:flex; align-items:center; justify-content:center;
-      backdrop-filter: blur(6px);
+      font-size: 26px; line-height:1;
+      backdrop-filter: blur(4px);
+      -webkit-tap-highlight-color: transparent;
+      user-select:none; -webkit-user-select:none; -webkit-touch-callout:none;
+      touch-action: manipulation;
+      cursor:pointer; z-index: 4;
     }
-    .seek-left { left: 8px; }
-    .seek-right { right: 8px; }
-    .seek-btn span { font-size: 11px; }
+    .seek-btn:active { background: rgba(0,0,0,.7); transform: translateY(-50%) scale(.95); }
+    .seek-btn-left  { left: 12px; }
+    .seek-btn-right { right: 12px; }
     .controls { display:flex; flex-wrap:wrap; gap:8px; padding:10px; background:var(--card); border-radius:12px; margin-top:10px; align-items:center; }
     .chip { background: #252b37; color: var(--text); border:none; padding:6px 10px; border-radius:999px; font-size:12px; }
     .chip.active { background: var(--accent); }
@@ -34,19 +43,8 @@
     .badge { color: var(--muted); font-size:12px; }
     .res-group { display:flex; gap:4px; align-items:center; }
     .res-label { color:var(--muted); font-size:12px; white-space:nowrap; }
-    .speed-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: none; align-items:center; justify-content:center; z-index:1000; }
-    .speed-overlay.active { display:flex; }
-    .speed-panel { background: var(--card); padding: 12px; border-radius:12px; display:flex; gap:10px; }
     .btn-danger { background: #e05252; color:#fff; border:none; padding:6px 14px; border-radius:8px; font-size:13px; cursor:pointer; }
     .btn-danger:hover { background: #c43a3a; }
-    .confirm-overlay { position:fixed; inset:0; background:rgba(0,0,0,.6); display:none; align-items:center; justify-content:center; z-index:2000; }
-    .confirm-overlay.active { display:flex; }
-    .confirm-box { background:var(--card); border-radius:16px; padding:24px 20px; width:min(88vw,360px); box-shadow:0 12px 40px rgba(0,0,0,.5); }
-    .confirm-box h3 { margin:0 0 8px; font-size:16px; }
-    .confirm-box p { margin:0 0 20px; color:var(--muted); font-size:14px; word-break:break-all; }
-    .confirm-actions { display:flex; gap:10px; justify-content:flex-end; }
-    .confirm-actions .cancel { background:#2a3040; color:var(--text); border:none; padding:8px 16px; border-radius:8px; font-size:13px; cursor:pointer; }
-    .confirm-actions .confirm { background:#e05252; color:#fff; border:none; padding:8px 16px; border-radius:8px; font-size:13px; cursor:pointer; }
   </style>
 </head>
 <body>
@@ -59,12 +57,30 @@
     <div class="container">
       <div class="player">
         <video ref="player" controls playsinline webkit-playsinline autoplay muted :src="mediaUrl"></video>
-        <button class="seek-btn seek-left" @click="seek(-10)"><span>-10s</span></button>
-        <button class="seek-btn seek-right" @click="seek(+10)"><span>+10s</span></button>
+        <button class="seek-btn seek-btn-left"
+                aria-label="后退10秒"
+                @pointerdown.prevent="onSeekPress(-10, $event)"
+                @pointerup="onSeekRelease"
+                @pointerleave="onSeekRelease"
+                @pointercancel="onSeekRelease"
+                @contextmenu.prevent>⏪</button>
+        <button class="seek-btn seek-btn-right"
+                aria-label="前进10秒"
+                @pointerdown.prevent="onSeekPress(10, $event)"
+                @pointerup="onSeekRelease"
+                @pointerleave="onSeekRelease"
+                @pointercancel="onSeekRelease"
+                @contextmenu.prevent>⏩</button>
       </div>
       <div class="controls">
         <!-- Speed buttons removed as requested -->
         <div class="rec">
+          <div class="res-group">
+            <span class="res-label">倍速：</span>
+            <button v-for="s in speedOptions" :key="s"
+              class="chip" :class="{active: speed===s}"
+              @click="setSpeed(s)">{{ s }}x</button>
+          </div>
           <button class="chip" :class="{active: recordMode==='clip'}" @click="toggleClip">
             🎬 导出视频
           </button>
@@ -87,23 +103,6 @@
       </div>
     </div>
 
-    <div class="speed-overlay" :class="{active: overlay}">
-      <div class="speed-panel" @mousedown.stop @touchstart.stop>
-        <div class="chip">在视频上长按并左右滑动调速</div>
-      </div>
-    </div>
-
-    <!-- 删除二次确认弹窗 -->
-    <div class="confirm-overlay" :class="{active: showConfirm}">
-      <div class="confirm-box" @mousedown.stop @touchstart.stop>
-        <h3>确认删除</h3>
-        <p>将永久删除文件：<strong>{{ name }}</strong>，此操作不可恢复。</p>
-        <div class="confirm-actions">
-          <button class="cancel" @click="showConfirm=false">取消</button>
-          <button class="confirm" @click="doDelete" :disabled="deleting">{{ deleting ? '删除中...' : '确认删除' }}</button>
-        </div>
-      </div>
-    </div>
   </div>
   <script>
     function getQuery(k){ const u=new URL(window.location.href); return u.searchParams.get(k)||''; }
@@ -113,22 +112,17 @@
         return {
           path: decodeURIComponent(getQuery('path')),
           name: decodeURIComponent(getQuery('name')) || '播放详情',
-          speeds: [1.0, 1.25, 1.5, 2.0],
-          longSpeeds: [2.0, 3.0, 4.0, 5.0],
-          speed: 1.0,
-          overlay: false,
+          speedOptions: [1.25, 1.5, 2, 3, 5],
+          speed: 1,
           startTime: 0,
           endTime: 0,
           downloadUrl: '',
           recordMode: null,
           metaLoaded: false,
-          touchStartX: 0,
-          touchStartTime: 0,
-          longPressTimer: null,
-          baseSpeed: 1.0,
-          tempSpeed: 1.0,
-          showConfirm: false,
           deleting: false,
+          seekHoldStartTimer: null,
+          seekHoldTimer: null,
+          seekHoldFired: false,
           exportWidth: 0,
           resOptions: [
             { label: '720p', value: 1280 },
@@ -145,25 +139,46 @@
       },
       mounted(){
         const v = this.$refs.player;
-        v.playbackRate = this.speed;
         v.addEventListener('error', this.onPlaybackError);
         v.addEventListener('loadedmetadata', ()=>{
           this.metaLoaded = true;
-          // 静音自动播放成功后恢复音量
-          v.muted = false;
+          // 尝试播放后再延迟解除静音，避免 iPad/iOS 立即取消静音导致暂停
+          v.play().then(()=> this.tryUnmute()).catch(()=>{
+            // 自动播放被拒绝时保持静音继续尝试播放
+            v.play().catch(()=>{}).finally(()=> this.tryUnmute());
+          });
         });
-        // 尝试自动播放（先静音以绕过浏览器限制）
+        // 立即尝试自动播放（先静音以绕过浏览器限制），元数据就绪后再解除静音
         v.play().catch(()=>{});
-        // gestures
-        v.addEventListener('touchstart', this.onTouchStart, {passive:false});
-        v.addEventListener('touchmove', this.onTouchMove, {passive:false});
-        v.addEventListener('touchend', this.onTouchEnd);
-        v.addEventListener('mousedown', this.onMouseDown);
+        // Auto-resume on fullscreen exit (iPad WebKit pauses video when leaving native fullscreen)
+        v.addEventListener('webkitendfullscreen', this.onFullscreenExit);
+        document.addEventListener('fullscreenchange', this.onDocFullscreenChange);
+        document.addEventListener('webkitfullscreenchange', this.onDocFullscreenChange);
       },
       methods:{
         goBack(){ history.length>1 ? history.back() : window.location.href='/' },
+        tryUnmute(){
+          const v = this.$refs.player;
+          if (!v) return;
+          // iOS/iPad: 立即取消静音可能导致播放停止；延迟后再操作并校验状态
+          setTimeout(()=>{
+            if (!v) return;
+            const wasPlaying = !v.paused;
+            v.muted = false;
+            // 取消静音后若被暂停（典型 iOS 行为），回滚为静音并继续播放
+            setTimeout(()=>{
+              if (wasPlaying && v.paused && !v.ended){
+                v.muted = true;
+                v.play().catch(()=>{});
+              }
+            }, 60);
+          }, 300);
+        },
         confirmDelete(){
-          this.showConfirm = true;
+          if (this.deleting) return;
+          const ok = window.confirm('确认删除该文件？\n' + this.name + '\n此操作不可恢复。');
+          if (!ok) return;
+          this.doDelete();
         },
         async doDelete(){
           if (this.deleting) return;
@@ -176,20 +191,56 @@
               window.location.href = '/';
             } else {
               const d = await r.json().catch(()=>({}));
-              alert('删除失败：' + (d.error || r.status));
+              window.alert('删除失败：' + (d.error || r.status));
               this.deleting = false;
-              this.showConfirm = false;
             }
           } catch(e) {
-            alert('删除失败：' + e.message);
+            window.alert('删除失败：' + e.message);
             this.deleting = false;
-            this.showConfirm = false;
+          }
+        },
+        onSeekPress(delta, e){
+          if (e && e.target && e.target.setPointerCapture && e.pointerId != null){
+            try { e.target.setPointerCapture(e.pointerId); } catch(_){}
+          }
+          this.seekHoldFired = false;
+          this.seek(delta);
+          this.clearSeekHold();
+          this.seekHoldStartTimer = setTimeout(()=>{
+            this.seekHoldFired = true;
+            this.seekHoldTimer = setInterval(()=>{ this.seek(delta); }, 200);
+          }, 400);
+        },
+        onSeekRelease(){
+          this.clearSeekHold();
+        },
+        clearSeekHold(){
+          if (this.seekHoldStartTimer){ clearTimeout(this.seekHoldStartTimer); this.seekHoldStartTimer = null; }
+          if (this.seekHoldTimer){ clearInterval(this.seekHoldTimer); this.seekHoldTimer = null; }
+        },
+        onFullscreenExit(){
+          // iPad WebKit auto-pauses on native fullscreen exit; resume if not ended
+          const v = this.$refs.player;
+          if (!v) return;
+          setTimeout(()=>{
+            if (v.paused && !v.ended){
+              v.play().catch(()=>{});
+            }
+          }, 50);
+        },
+        onDocFullscreenChange(){
+          const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
+          if (!fsEl){
+            // Exiting fullscreen - ensure playback continues
+            this.onFullscreenExit();
           }
         },
         setSpeed(s){
-          this.speed = s;
           const v = this.$refs.player;
-          v.playbackRate = s;
+          // Toggle off when clicking the active chip -> back to 1x
+          const next = (this.speed === s) ? 1 : s;
+          this.speed = next;
+          if (v) v.playbackRate = next;
         },
         onPlaybackError(){
           this.requestPlayable();
@@ -201,7 +252,6 @@
             this.compatUrl = d.url;
             const v = this.$refs.player;
             v.src = d.url;
-            v.playbackRate = this.speed;
             v.play().catch(()=>{});
           } catch(e) {}
         },
@@ -268,69 +318,6 @@
           this.saveToDevice(this.downloadUrl, name);
         },
         safeBaseName(n){ return (n||'video').replace(/\.[^/.]+$/, ''); },
-        onTouchStart(e){
-          if (e.touches.length!==1) return;
-          this.touchStartX = e.touches[0].clientX;
-          this.touchStartTime = Date.now();
-          clearTimeout(this.longPressTimer);
-          this.longPressTimer = setTimeout(()=>{
-            this.speedMode = true;
-            this.overlay = true;
-            this.baseSpeed = 2.0; // Default to 2.0x on long press
-            this.applySpeed(this.baseSpeed);
-          }, 300);
-        },
-        onTouchMove(e){
-          if (this.speedMode){
-            e.preventDefault();
-            const dx = e.touches[0].clientX - this.touchStartX;
-            const step = 0.25;
-            const delta = Math.round((dx/80)/step)*step;
-            // Allow speed adjustment from baseSpeed (2.0)
-            const s = Math.max(0.5, Math.min(5.0, this.baseSpeed + delta));
-            this.applySpeed(s);
-          }
-        },
-        onTouchEnd(e){
-          clearTimeout(this.longPressTimer);
-          if (this.speedMode){
-            this.speedMode = false;
-            this.overlay = false;
-            // Restore original speed (Momentary behavior)
-            this.applySpeed(this.speed); 
-          } else {
-            // Handle tap for seek
-            const touchDuration = Date.now() - this.touchStartTime;
-            if (touchDuration < 300) {
-               const x = e.changedTouches[0].clientX;
-               const v = this.$refs.player;
-               const rect = v.getBoundingClientRect();
-               const relX = x - rect.left;
-               if (relX < rect.width * 0.2) {
-                 this.seek(-10);
-               } else if (relX > rect.width * 0.8) {
-                 this.seek(10);
-               }
-            }
-          }
-        },
-        onMouseDown(e){
-          const v = this.$refs.player;
-          const rect = v.getBoundingClientRect();
-          const x = e.clientX - rect.left;
-          const leftZone = rect.width * 0.2;
-          const rightZone = rect.width * 0.8;
-          if (x < leftZone){
-            v.currentTime = Math.max(0, v.currentTime - 10);
-          } else if (x > rightZone){
-            v.currentTime = Math.min(v.duration || v.currentTime+10, v.currentTime + 10);
-          }
-        },
-        applySpeed(s){
-          this.tempSpeed = s;
-          const v = this.$refs.player;
-          v.playbackRate = s;
-        }
       }
     });
   </script>
